@@ -8,6 +8,8 @@ function extractNumber(text: string): string | null {
   return match?.[0] ?? null;
 }
 
+const SCAN_INTERVAL_MS = 900;
+
 export function useNumericCapture() {
   const [events, setEvents] = useState<CapturedNumber[]>([]);
   const [processing, setProcessing] = useState(false);
@@ -15,23 +17,66 @@ export function useNumericCapture() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const startedAtRef = useRef(0);
+  const pausedAccumRef = useRef(0);
+  const pauseStartRef = useRef<number | null>(null);
   const lastValueRef = useRef<string | null>(null);
   const busyRef = useRef(false);
+
+  const clearTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
 
   const clearEvents = useCallback(() => {
     setEvents([]);
     lastValueRef.current = null;
   }, []);
 
-  const stop = useCallback(() => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
+  const scan = useCallback(async () => {
+    const canvas = canvasRef.current;
+    const worker = workerRef.current;
+    if (busyRef.current || !canvas || !worker || pauseStartRef.current !== null) return;
+    busyRef.current = true;
+    const frameAt = Date.now();
+    const elapsedMs = frameAt - startedAtRef.current - pausedAccumRef.current;
+    try {
+      const result = await worker.recognize(canvas);
+      if (canvasRef.current !== canvas) return;
+      const value = extractNumber(result.data.text);
+      if (value && value !== lastValueRef.current) {
+        lastValueRef.current = value;
+        setEvents((previous) => [
+          ...previous,
+          {
+            value,
+            numeric_value: Number(value),
+            captured_at: new Date(frameAt).toISOString(),
+            elapsed_ms: elapsedMs,
+            confidence: result.data.confidence ?? null,
+            source: 'ocr',
+          },
+        ]);
+      }
+    } finally {
+      busyRef.current = false;
     }
+  }, []);
+
+  const startTimer = useCallback(() => {
+    clearTimer();
+    void scan();
+    timerRef.current = setInterval(scan, SCAN_INTERVAL_MS);
+  }, [clearTimer, scan]);
+
+  const stop = useCallback(() => {
+    clearTimer();
     canvasRef.current = null;
+    pauseStartRef.current = null;
     setProcessing(false);
     busyRef.current = false;
-  }, []);
+  }, [clearTimer]);
 
   const start = useCallback(
     async (canvas: HTMLCanvasElement, startedAt: number) => {
@@ -39,6 +84,7 @@ export function useNumericCapture() {
       clearEvents();
       canvasRef.current = canvas;
       startedAtRef.current = startedAt;
+      pausedAccumRef.current = 0;
       setProcessing(true);
 
       if (!workerRef.current) {
@@ -48,37 +94,26 @@ export function useNumericCapture() {
         });
       }
 
-      const scan = async () => {
-        if (busyRef.current || !canvasRef.current || !workerRef.current) return;
-        busyRef.current = true;
-        try {
-          const result = await workerRef.current.recognize(canvasRef.current);
-          const value = extractNumber(result.data.text);
-          if (value && value !== lastValueRef.current) {
-            lastValueRef.current = value;
-            const now = Date.now();
-            setEvents((previous) => [
-              ...previous,
-              {
-                value,
-                numeric_value: Number(value),
-                captured_at: new Date(now).toISOString(),
-                elapsed_ms: now - startedAtRef.current,
-                confidence: result.data.confidence ?? null,
-                source: 'ocr',
-              },
-            ]);
-          }
-        } finally {
-          busyRef.current = false;
-        }
-      };
-
-      await scan();
-      timerRef.current = setInterval(scan, 900);
+      if (canvasRef.current !== canvas || pauseStartRef.current !== null) return;
+      startTimer();
     },
-    [clearEvents, stop]
+    [clearEvents, startTimer, stop]
   );
+
+  const pause = useCallback(() => {
+    if (!canvasRef.current || pauseStartRef.current !== null) return;
+    clearTimer();
+    pauseStartRef.current = Date.now();
+    setProcessing(false);
+  }, [clearTimer]);
+
+  const resume = useCallback(() => {
+    if (!canvasRef.current || pauseStartRef.current === null) return;
+    pausedAccumRef.current += Date.now() - pauseStartRef.current;
+    pauseStartRef.current = null;
+    setProcessing(true);
+    if (workerRef.current) startTimer();
+  }, [startTimer]);
 
   useEffect(() => {
     return () => {
@@ -89,5 +124,5 @@ export function useNumericCapture() {
     };
   }, [stop]);
 
-  return { events, processing, start, stop, clearEvents };
+  return { events, processing, start, pause, resume, stop, clearEvents };
 }

@@ -43,7 +43,15 @@ export function RecordingStudio({ onSaved }: RecordingStudioProps) {
     cleanup,
   } = useScreenRecorder();
   const { saveRecording, saveCaptureData } = useRecordings();
-  const { events, processing, start: startNumericCapture, stop: stopNumericCapture, clearEvents } = useNumericCapture();
+  const {
+    events,
+    processing,
+    start: startNumericCapture,
+    pause: pauseNumericCapture,
+    resume: resumeNumericCapture,
+    stop: stopNumericCapture,
+    clearEvents,
+  } = useNumericCapture();
 
   const [includeAudio, setIncludeAudio] = useState(true);
   const [format, setFormat] = useState<RecordingFormat>('webm');
@@ -58,7 +66,7 @@ export function RecordingStudio({ onSaved }: RecordingStudioProps) {
   const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
   const selectionVideoRef = useRef<HTMLVideoElement>(null);
   const selectionSurfaceRef = useRef<HTMLDivElement>(null);
-  const numericStartedAtRef = useRef(0);
+  const numericCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const isRecording = status === 'recording';
   const isPaused = status === 'paused';
@@ -77,12 +85,18 @@ export function RecordingStudio({ onSaved }: RecordingStudioProps) {
   }, [selectionStream]);
 
   useEffect(() => {
-    if (isRecording && captureCanvas) {
-      void startNumericCapture(captureCanvas, numericStartedAtRef.current);
-    } else if (!isRecording && !isPaused) {
+    if (!captureCanvas || (!isRecording && !isPaused)) {
+      numericCanvasRef.current = null;
       stopNumericCapture();
+    } else if (isPaused) {
+      pauseNumericCapture();
+    } else if (numericCanvasRef.current === captureCanvas) {
+      resumeNumericCapture();
+    } else {
+      numericCanvasRef.current = captureCanvas;
+      void startNumericCapture(captureCanvas, Date.now());
     }
-  }, [captureCanvas, isPaused, isRecording, startNumericCapture, stopNumericCapture]);
+  }, [captureCanvas, isPaused, isRecording, pauseNumericCapture, resumeNumericCapture, startNumericCapture, stopNumericCapture]);
 
   const handleChooseScreen = async () => {
     const stream = await selectScreen();
@@ -147,7 +161,6 @@ export function RecordingStudio({ onSaved }: RecordingStudioProps) {
   const handleStart = () => {
     if (!selectionRegion) return;
     setSavedSuccess(false);
-    numericStartedAtRef.current = Date.now();
     start({ format, includeAudio, region: selectionRegion });
     setSelectingScreen(false);
   };
